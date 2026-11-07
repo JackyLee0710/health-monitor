@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>家屬照護協同管理系統</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-slate-100 text-slate-800 antialiased min-h-screen pb-16">
+
+  <!-- 頂部導航 -->
+  <header class="bg-indigo-700 text-white shadow-md sticky top-0 z-30">
+    <div class="max-w-4xl mx-auto px-4 py-3 flex justify-between items-center">
+      <div>
+        <h1 class="text-lg font-bold flex items-center gap-2">
+          <i class="fa-solid fa-notes-medical"></i> 共同照護記錄站
+        </h1>
+        <p class="text-xs text-indigo-200" id="syncStatus">模式：本地離線儲存 (可綁定 Firebase 進行即時共筆)</p>
+      </div>
+      <button onclick="toggleConfigModal()" class="text-xs bg-indigo-800 hover:bg-indigo-900 border border-indigo-400 px-2.5 py-1.5 rounded-lg flex items-center gap-1">
+        <i class="fa-solid fa-gear"></i> 連線設定
+      </button>
+    </div>
+    <!-- 頁籤導覽 -->
+    <div class="max-w-4xl mx-auto flex border-t border-indigo-600/60 text-sm font-medium">
+      <button onclick="switchTab('vitals')" id="tabBtn-vitals" class="flex-1 py-2.5 text-center bg-indigo-800 text-white border-b-2 border-white flex justify-center items-center gap-1.5">
+        <i class="fa-solid fa-heart-pulse"></i> 生理數值/圖表
+      </button>
+      <button onclick="switchTab('io')" id="tabBtn-io" class="flex-1 py-2.5 text-center text-indigo-100 hover:bg-indigo-600/40 flex justify-center items-center gap-1.5">
+        <i class="fa-solid fa-faucet-drip"></i> 輸出輸入量 (I/O)
+      </button>
+      <button onclick="switchTab('logs')" id="tabBtn-logs" class="flex-1 py-2.5 text-center text-indigo-100 hover:bg-indigo-600/40 flex justify-center items-center gap-1.5">
+        <i class="fa-solid fa-clipboard-user"></i> 交班狀況更新
+      </button>
+    </div>
+  </header>
+
+  <main class="max-w-4xl mx-auto px-3 sm:px-4 py-4 space-y-4">
+
+    <!-- 頁面 1: 生理數值紀錄與趨勢圖表 -->
+    <section id="tab-vitals" class="space-y-4">
+      <!-- 統計圖表卡片 -->
+      <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+        <div class="flex flex-wrap justify-between items-center mb-2">
+          <h2 class="font-bold text-slate-800 text-sm sm:text-base flex items-center gap-1.5">
+            <i class="fa-solid fa-chart-line text-indigo-600"></i> 生理數據走勢
+          </h2>
+          <div class="flex gap-1 text-xs">
+            <button onclick="setChartFilter('all')" class="filter-btn active bg-indigo-50 border border-indigo-300 text-indigo-700 px-2 py-1 rounded">全部</button>
+            <button onclick="setChartFilter('bp')" class="filter-btn bg-slate-100 text-slate-600 px-2 py-1 rounded">僅血壓</button>
+            <button onclick="setChartFilter('temp')" class="filter-btn bg-slate-100 text-slate-600 px-2 py-1 rounded">僅體溫</button>
+          </div>
+        </div>
+        <div class="relative w-full h-64">
+          <canvas id="vitalsChart"></canvas>
+        </div>
+      </div>
+
+      <!-- 快速新增表單 -->
+      <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+        <div class="flex justify-between items-center mb-3">
+          <h2 class="font-bold text-slate-800 text-sm sm:text-base flex items-center gap-1.5">
+            <i class="fa-solid fa-plus-circle text-emerald-600"></i> 新增生命徵象
+          </h2>
+          <button type="button" onclick="setNowVitals()" class="text-xs text-indigo-600 hover:underline">填入目前時間</button>
+        </div>
+
+        <form id="vitalsForm" onsubmit="handleVitalSubmit(event)" class="space-y-3">
+          <div class="grid grid-cols-2 sm:grid-cols-5 gap-2">
+            <div class="col-span-2 sm:col-span-1">
+              <label class="text-xs text-slate-500 font-semibold">紀錄時間</label>
+              <input type="datetime-local" id="vDate" required class="w-full text-xs border rounded p-1.5 mt-0.5 focus:ring-1 focus:ring-indigo-500">
+            </div>
+            <div>
+              <label class="text-xs text-slate-500 font-semibold">收縮壓 (高壓)</label>
+              <input type="number" id="vSys" placeholder="120" required class="w-full text-xs border rounded p-1.5 mt-0.5 focus:ring-1 focus:ring-indigo-500">
+            </div>
+            <div>
+              <label class="text-xs text-slate-500 font-semibold">舒張壓 (低壓)</label>
+              <input type="number" id="vDia" placeholder="80" required class="w-full text-xs border rounded p-1.5 mt-0.5 focus:ring-1 focus:ring-indigo-500">
+            </div>
+            <div>
+              <label class="text-xs text-slate-500 font-semibold">脈搏 (bpm)</label>
+              <input type="number" id="vPulse" placeholder="75" required class="w-full text-xs border rounded p-1.5 mt-0.5 focus:ring-1 focus:ring-indigo-500">
+            </div>
+            <div>
+              <label class="text-xs text-slate-500 font-semibold">體溫 (°C)</label>
+              <input type="number" step="0.1" id="vTemp" placeholder="36.8" class="w-full text-xs border rounded p-1.5 mt-0.5 focus:ring-1 focus:ring-indigo-500">
+            </div>
+          </div>
+          <div class="flex justify-between items-center pt-1">
+            <input type="text" id="vUser" placeholder="記錄者姓名 (例: 大哥 / 白班看護)" class="text-xs border rounded px-2 py-1.5 w-44">
+            <button type="submit" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-4 py-2 rounded-lg shadow-sm">
+              <i class="fa-solid fa-check"></i> 儲存數據
+            </button>
+          </div>
+        </form>
+
+        <!-- 純文字快速匯入折疊欄位 -->
+        <details class="mt-3 text-xs border-t pt-2 text-slate-600">
+          <summary class="cursor-pointer text-indigo-600 font-medium">批次貼上備忘文字匯入 (如：11/6 00:24 151/97/90 37.6°)</summary>
+          <div class="mt-2 space-y-1.5">
+            <textarea id="bulkTextInput" rows="3" placeholder="貼上格式範例：&#10;11/6 00:24 151/97/90 37.6&#10;11/6 04:30 177/102/78 37.2" class="w-full border p-2 rounded text-xs"></textarea>
+            <button onclick="handleBulkImport()" class="bg-slate-700 hover:bg-slate-800 text-white px-3 py-1 rounded text-xs">一鍵解析匯入</button>
+          </div>
+        </details>
+      </div>
+
+      <!-- 生理數值歷史清單 -->
+      <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+        <div class="px-4 py-3 border-b bg-slate-50 font-bold text-xs sm:text-sm text-slate-700">檢測歷史明細</div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs text-slate-600">
+            <thead class="bg-slate-100 text-slate-500 uppercase border-b">
+              <tr>
+                <th class="p-2.5">時間</th>
+                <th class="p-2.5">血壓 (mmHg)</th>
+                <th class="p-2.5">脈搏</th>
+                <th class="p-2.5">體溫</th>
+                <th class="p-2.5">記錄者</th>
+                <th class="p-2.5 text-right">操作</th>
+              </tr>
+            </thead>
+            <tbody id="vitalsTableBody" class="divide-y divide-slate-100"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 頁面 2: 輸出輸入記錄表 (I/O) -->
+    <section id="tab-io" class="hidden space-y-4">
+      <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+        <div class="flex justify-between items-center mb-3">
+          <div>
+            <h2 class="font-bold text-slate-800 text-sm sm:text-base flex items-center gap-1.5">
+              <i class="fa-solid fa-clipboard-list text-blue-600"></i> 每日輸出入量 (I/O) 登記
+            </h2>
+            <p class="text-xs text-slate-500">標準分班：白班 (07-15) / 小夜 (15-23) / 大夜 (23-07)</p>
+          </div>
+          <button onclick="setNowIO()" class="text-xs text-indigo-600 hover:underline">帶入現在時間</button>
+        </div>
+
+        <form id="ioForm" onsubmit="handleIOSubmit(event)" class="space-y-3">
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div>
+              <label class="text-xs text-slate-500 font-semibold">時間</label>
+              <input type="datetime-local" id="ioDate" required class="w-full text-xs border rounded p-1.5 mt-0.5">
+            </div>
+            <div>
+              <label class="text-xs text-slate-500 font-semibold">班別</label>
+              <select id="ioShift" class="w-full text-xs border rounded p-1.5 mt-0.5 bg-white">
+                <option value="白班">白班 (07:00-15:00)</option>
+                <option value="小夜">小夜 (15:00-23:00)</option>
+                <option value="大夜">大夜 (23:00-07:00)</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-slate-500 font-semibold">項目類型</label>
+              <select id="ioType" onchange="updateIOTypes()" class="w-full text-xs border rounded p-1.5 mt-0.5 bg-white font-medium">
+                <option value="input">輸入量 (Input - 吃/喝/點滴)</option>
+                <option value="output">輸出量 (Output - 尿/便/引流/吐)</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-slate-500 font-semibold">名稱/內容說明</label>
+              <input type="text" id="ioItem" placeholder="例：開水、皮蛋瘦肉粥、點滴" required class="w-full text-xs border rounded p-1.5 mt-0.5">
+            </div>
+            <div>
+              <label class="text-xs text-slate-500 font-semibold">數值量 (cc / ml / g)</label>
+              <input type="number" id="ioAmount" placeholder="200" required class="w-full text-xs border rounded p-1.5 mt-0.5">
+            </div>
+            <div>
+              <label class="text-xs text-slate-500 font-semibold">備註 / 性質說明</label>
+              <input type="text" id="ioNote" placeholder="例: 尿黃、糊便、乾嘔未吐出" class="w-full text-xs border rounded p-1.5 mt-0.5">
+            </div>
+            <div class="col-span-2 flex items-end justify-end">
+              <button type="submit" class="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-4 py-2 rounded-lg">
+                <i class="fa-solid fa-plus"></i> 新增 I/O 紀錄
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      <!-- I/O 班別加總統計摘要 -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs" id="ioSummaryCards">
+        <!-- JS 自動計算帶入 -->
+      </div>
+
+      <!-- I/O 紀錄明細 -->
+      <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+        <div class="px-4 py-3 border-b bg-slate-50 font-bold text-xs sm:text-sm text-slate-700">I/O 紀錄明細列表</div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs text-slate-600">
+            <thead class="bg-slate-100 text-slate-500 uppercase border-b">
+              <tr>
+                <th class="p-2.5">時間/班別</th>
+                <th class="p-2.5">類別</th>
+                <th class="p-2.5">項目</th>
+                <th class="p-2.5">量 (cc/g)</th>
+                <th class="p-2.5">備註說明</th>
+                <th class="p-2.5 text-right">操作</th>
+              </tr>
+            </thead>
+            <tbody id="ioTableBody" class="divide-y divide-slate-100"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 頁面 3: 症狀日誌與交班更新 -->
+    <section id="tab-logs" class="hidden space-y-4">
+      <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+        <h2 class="font-bold text-slate-800 text-sm sm:text-base flex items-center gap-1.5 mb-2">
+          <i class="fa-solid fa-comment-medical text-amber-500"></i> 新增症狀反應與交班事項
+        </h2>
+        <form id="logForm" onsubmit="handleLogSubmit(event)" class="space-y-3">
+          <div class="flex flex-wrap gap-1.5 mb-1" id="quickTags">
+            <span class="text-xs text-slate-400 self-center mr-1">快捷標籤:</span>
+            <button type="button" onclick="insertTag('畏光')" class="text-xs bg-slate-100 hover:bg-amber-100 border px-2 py-0.5 rounded text-slate-700">+ 畏光</button>
+            <button type="button" onclick="insertTag('頭暈想吐')" class="text-xs bg-slate-100 hover:bg-amber-100 border px-2 py-0.5 rounded text-slate-700">+ 頭暈想吐</button>
+            <button type="button" onclick="insertTag('乾嘔')" class="text-xs bg-slate-100 hover:bg-amber-100 border px-2 py-0.5 rounded text-slate-700">+ 乾嘔</button>
+            <button type="button" onclick="insertTag('吃止暈藥+鉀水')" class="text-xs bg-slate-100 hover:bg-amber-100 border px-2 py-0.5 rounded text-slate-700">+ 吃止暈藥+鉀水</button>
+            <button type="button" onclick="insertTag('拒吃軟便劑')" class="text-xs bg-slate-100 hover:bg-amber-100 border px-2 py-0.5 rounded text-slate-700">+ 拒吃軟便劑</button>
+            <button type="button" onclick="insertTag('2天未排便')" class="text-xs bg-slate-100 hover:bg-amber-100 border px-2 py-0.5 rounded text-slate-700">+ 2天未排便</button>
+          </div>
+          <textarea id="logContent" rows="3" required placeholder="詳細記錄病人精神狀況、護理師交代事項、用藥或異常反應..." class="w-full text-xs border rounded p-2 focus:ring-1 focus:ring-amber-500"></textarea>
+          <div class="flex justify-between items-center">
+            <input type="text" id="logAuthor" placeholder="交班者姓名 (例: 二姐)" required class="text-xs border rounded px-2 py-1.5 w-40">
+            <button type="submit" class="bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold px-4 py-2 rounded-lg">
+              <i class="fa-solid fa-paper-plane"></i> 發送交班紀錄
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <!-- 狀況更新時間軸 -->
+      <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+        <h3 class="font-bold text-xs sm:text-sm text-slate-700 border-b pb-2 mb-3">交班時間軸</h3>
+        <div id="careLogsTimeline" class="space-y-4"></div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Firebase 設定彈窗 -->
+  <div id="configModal" class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-white rounded-xl shadow-xl max-w-md w-full p-5 space-y-3">
+      <div class="flex justify-between items-center border-b pb-2">
+        <h3 class="font-bold text-sm text-slate-800"><i class="fa-solid fa-cloud"></i> Firebase 即時雲端同步設定</h3>
+        <button onclick="toggleConfigModal()" class="text-slate-400 hover:text-slate-600"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <p class="text-xs text-slate-500">
+        若要讓輪班家人「即時看到彼此新增的數據」，請至 <a href="https://console.firebase.google.com" target="_blank" class="text-blue-600 underline">Firebase Console</a> 建立免費專案，開啟 <b>Realtime Database</b>，並將 Web SDK 設定物件貼在下方：
+      </p>
+      <textarea id="firebaseConfigInput" rows="6" placeholder='{&#10;  "apiKey": "AIzaSy...",&#10;  "authDomain": "...firebaseapp.com",&#10;  "databaseURL": "https://...firebasedatabase.app",&#10;  "projectId": "...",&#10;  "storageBucket": "..."&#10;}' class="w-full text-xs font-mono border rounded p-2 bg-slate-50"></textarea>
+      <div class="flex justify-end gap-2 pt-2">
+        <button onclick="clearFirebaseConfig()" class="px-3 py-1.5 text-xs text-rose-600 hover:bg-rose-50 rounded">清除/改用單機</button>
+        <button onclick="saveFirebaseConfig()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-1.5 text-xs rounded font-medium">儲存並連線</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // 預設資料 (對應使用者截圖提供數據)
+    let defaultVitals = [
+      { id: '1', date: '2026-11-05T17:48', sys: 150, dia: 94, pulse: 97, temp: null, user: '記錄員' },
+      { id: '2', date: '2026-11-05T20:19', sys: 143, dia: 96, pulse: 91, temp: null, user: '記錄員' },
+      { id: '3', date: '2026-11-06T00:24', sys: 151, dia: 97, pulse: 90, temp: 37.6, user: '大夜' },
+      { id: '4', date: '2026-11-06T04:30', sys: 177, dia: 102, pulse: 78, temp: 37.2, user: '大夜' },
+      { id: '5', date: '2026-11-06T07:52', sys: 166, dia: 76, pulse: 84, temp: 37.0, user: '白班' },
+      { id: '6', date: '2026-11-06T14:13', sys: 165, dia: 86, pulse: 88, temp: 37.1, user: '白班' }
+    ];
+
+    let defaultIO = [
+      { id: '1', date: '2026-11-07T11:58', shift: '白班', type: 'input', item: '鉀水', amount: 20, note: '' },
+      { id: '2', date: '2026-11-07T11:58', shift: '白班', type: 'input', item: '白開水', amount: 60, note: '' },
+      { id: '3', date: '2026-11-07T11:45', shift: '白班', type: 'input', item: '點滴(諾沙球)', amount: 1000, note: '滴注' },
+      { id: '4', date: '2026-11-07T14:01', shift: '白班', type: 'output', item: '尿量', amount: 240, note: '' },
+      { id: '5', date: '2026-11-07T14:05', shift: '白班', type: 'input', item: '開水', amount: 200, note: '' },
+      { id: '6', date: '2026-11-07T15:35', shift: '小夜', type: 'input', item: '開水', amount: 200, note: '' },
+      { id: '7', date: '2026-11-07T15:40', shift: '小夜', type: 'output', item: '尿量', amount: 200, note: '黃' },
+      { id: '8', date: '2026-11-07T16:50', shift: '小夜', type: 'input', item: '開水', amount: 250, note: '' },
+      { id: '9', date: '2026-11-07T16:44', shift: '小夜', type: 'output', item: '尿量', amount: 190, note: '黃' },
+      { id: '10', date: '2026-11-07T18:00', shift: '小夜', type: 'output', item: '尿量', amount: 150, note: '黃' },
+      { id: '11', date: '2026-11-07T18:23', shift: '小夜', type: 'input', item: '皮蛋瘦肉粥', amount: 300, note: '食慾稍緩' },
+      { id: '12', date: '2026-11-07T18:23', shift: '小夜', type: 'input', item: '開水', amount: 200, note: '' },
+      { id: '13', date: '2026-11-07T18:23', shift: '小夜', type: 'input', item: '鉀水', amount: 20, note: '' }
+    ];
+
+    let defaultLogs = [
+      { id: '1', date: '2026-11-07T17:08', author: 'Wei / 寶瑩', content: '注意排便狀況：已2天未上廁所；病人拒絕吃軟便劑，護理師有提到要開軟便劑。' },
+      { id: '2', date: '2026-11-07T18:28', author: '交班家屬', content: '護理師來量血糖與做理學檢查。結束後有吃一點粥，吃完有吃止暈藥+止吐藥+鉀水。' },
+      { id: '3', date: '2026-11-07T18:29', author: '交班家屬', content: '自述仍有點畏光、頭暈但不會頭痛，想吐；剛剛坐起來時有乾嘔，但沒有吐出來。' }
+    ];
+
+    let vitals = JSON.parse(localStorage.getItem('vitals_data')) || defaultVitals;
+    let ios = JSON.parse(localStorage.getItem('io_data')) || defaultIO;
+    let logs = JSON.parse(localStorage.getItem('logs_data')) || defaultLogs;
+    let fbDb = null;
+    let chartInstance = null;
+    let currentFilter = 'all';
+
+    // 初始化 Firebase
+    function initFirebase() {
+      const savedConfig = localStorage.getItem('care_firebase_config');
+      if (savedConfig) {
+        try {
+          const config = JSON.parse(savedConfig);
+          if (!firebase.apps.length) {
+            firebase.initializeApp(config);
+          }
+          fbDb = firebase.database();
+          document.getElementById('syncStatus').innerHTML = '<span class="text-emerald-300 font-bold"><i class="fa-solid fa-cloud-check"></i> Firebase 即時雲端同步中</span>';
+          
+          // 監聽雲端資料異動
+          fbDb.ref('vitals').on('value', snap => {
+            if (snap.exists()) { vitals = Object.values(snap.val()); renderVitals(); renderChart(); }
+          });
+          fbDb.ref('ios').on('value', snap => {
+            if (snap.exists()) { ios = Object.values(snap.val()); renderIO(); }
+          });
+          fbDb.ref('logs').on('value', snap => {
+            if (snap.exists()) { logs = Object.values(snap.val()).sort((a,b) => new Date(b.date) - new Date(a.date)); renderLogs(); }
+          });
+        } catch(e) {
+          console.error("Firebase 初始化失敗", e);
+          document.getElementById('syncStatus').innerText = '連線失敗，退回單機模式';
+        }
+      }
+    }
+
+    // 資料同步寫入 (本機 + Firebase)
+    function syncData(collection, data) {
+      localStorage.setItem(`${collection}_data`, JSON.stringify(data));
+      if (fbDb) {
+        const obj = {};
+        data.forEach(item => { obj[item.id] = item; });
+        fbDb.ref(collection).set(obj);
+      }
+    }
+
+    // 頁籤切換
+    function switchTab(tabId) {
+      ['vitals', 'io', 'logs'].forEach(t => {
+        document.getElementById(`tab-${t}`).classList.add('hidden');
+        document.getElementById(`tabBtn-${t}`).className = 'flex-1 py-2.5 text-center text-indigo-100 hover:bg-indigo-600/40 flex justify-center items-center gap-1.5';
+      });
+      document.getElementById(`tab-${tabId}`).classList.remove('hidden');
+      document.getElementById(`tabBtn-${tabId}`).className = 'flex-1 py-2.5 text-center bg-indigo-800 text-white border-b-2 border-white flex justify-center items-center gap-1.5';
+      if (tabId === 'vitals') setTimeout(renderChart, 50);
+    }
+
+    // 表單輔助時間
+    function setNowVitals() {
+      const now = new Date();
+      now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+      document.getElementById('vDate').value = now.toISOString().slice(0, 16);
+    }
+    function setNowIO() {
+      const now = new Date();
+      now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+      document.getElementById('ioDate').value = now.toISOString().slice(0, 16);
+      const hour = now.getHours();
+      if (hour >= 7 && hour < 15) document.getElementById('ioShift').value = '白班';
+      else if (hour >= 15 && hour < 23) document.getElementById('ioShift').value = '小夜';
+      else document.getElementById('ioShift').value = '大夜';
+    }
+
+    // 快捷標籤
+    function insertTag(text) {
+      const textarea = document.getElementById('logContent');
+      textarea.value = textarea.value ? `${textarea.value} 【${text}】` : `【${text}】`;
+      textarea.focus();
+    }
+
+    // 生理數值渲染與圖表
+    function renderVitals() {
+      const tbody = document.getElementById('vitalsTableBody');
+      tbody.innerHTML = '';
+      vitals.slice().reverse().forEach(v => {
+        const tr = document.createElement('tr');
+        const isHighSys = v.sys >= 140;
+        const isHighDia = v.dia >= 90;
+        tr.innerHTML = `
+          <td class="p-2.5 font-medium whitespace-nowrap">${v.date.replace('T', ' ')}</td>
+          <td class="p-2.5">
+            <span class="${isHighSys || isHighDia ? 'text-rose-600 font-bold' : 'text-slate-700'}">${v.sys}/${v.dia}</span>
+            ${v.sys >= 160 ? '<span class="ml-1 text-[10px] bg-red-100 text-red-600 px-1 py-0.5 rounded">高二期</span>' : ''}
+          </td>
+          <td class="p-2.5 font-medium text-emerald-600">${v.pulse} bpm</td>
+          <td class="p-2.5">${v.temp ? `<span class="${v.temp >= 37.5 ? 'text-amber-600 font-bold' : ''}">${v.temp} °C</span>` : '-'}</td>
+          <td class="p-2.5 text-slate-500">${v.user || '-'}</td>
+          <td class="p-2.5 text-right"><button onclick="deleteVital('${v.id}')" class="text-slate-400 hover:text-rose-500"><i class="fa-solid fa-trash"></i></button></td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    function renderChart() {
+      const ctx = document.getElementById('vitalsChart').getContext('2d');
+      const sorted = [...vitals].sort((a,b) => new Date(a.date) - new Date(b.date));
+      const labels = sorted.map(v => v.date.slice(5).replace('T', ' '));
+      const sysData = sorted.map(v => v.sys);
+      const diaData = sorted.map(v => v.dia);
+      const pulseData = sorted.map(v => v.pulse);
+      const tempData = sorted.map(v => v.temp);
+
+      const datasets = [];
+      if (currentFilter === 'all' || currentFilter === 'bp') {
+        datasets.push({ label: '收縮壓', data: sysData, borderColor: '#e11d48', backgroundColor: '#e11d48', yAxisID: 'y', tension: 0.2 });
+        datasets.push({ label: '舒張壓', data: diaData, borderColor: '#f97316', backgroundColor: '#f97316', yAxisID: 'y', tension: 0.2 });
+        datasets.push({ label: '脈搏', data: pulseData, borderColor: '#10b981', borderDash: [4, 4], yAxisID: 'y', tension: 0.2 });
+      }
+      if (currentFilter === 'all' || currentFilter === 'temp') {
+        datasets.push({ label: '體溫(°C)', data: tempData, borderColor: '#3b82f6', backgroundColor: '#3b82f6', yAxisID: 'y1', tension: 0.2 });
+      }
+
+      if (chartInstance) chartInstance.destroy();
+      chartInstance = new Chart(ctx, {
+        type: 'line',
+        data: { labels, datasets },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          scales: {
+            y: { position: 'left', min: 40, max: 200, title: { display: true, text: 'mmHg / bpm' } },
+            y1: { position: 'right', min: 35.0, max: 39.0, grid: { drawOnChartArea: false }, title: { display: true, text: '體溫 °C' }, display: currentFilter !== 'bp' }
+          }
+        }
+      });
+    }
+
+    function setChartFilter(filter) {
+      currentFilter = filter;
+      document.querySelectorAll('.filter-btn').forEach(btn => btn.className = 'filter-btn bg-slate-100 text-slate-600 px-2 py-1 rounded');
+      event.target.className = 'filter-btn active bg-indigo-50 border border-indigo-300 text-indigo-700 px-2 py-1 rounded';
+      renderChart();
+    }
+
+    function handleVitalSubmit(e) {
+      e.preventDefault();
+      const newV = {
+        id: Date.now().toString(),
+        date: document.getElementById('vDate').value,
+        sys: Number(document.getElementById('vSys').value),
+        dia: Number(document.getElementById('vDia').value),
+        pulse: Number(document.getElementById('vPulse').value),
+        temp: document.getElementById('vTemp').value ? Number(document.getElementById('vTemp').value) : null,
+        user: document.getElementById('vUser').value || '照顧者'
+      };
+      vitals.push(newV);
+      syncData('vitals', vitals);
+      renderVitals();
+      renderChart();
+      e.target.reset();
+      setNowVitals();
+    }
+
+    function deleteVital(id) {
+      if (confirm('確定刪除此筆記錄？')) {
+        vitals = vitals.filter(v => v.id !== id);
+        syncData('vitals', vitals);
+        renderVitals();
+        renderChart();
+      }
+    }
+
+    // 批次文字解析
+    function handleBulkImport() {
+      const text = document.getElementById('bulkTextInput').value.trim();
+      if (!text) return;
+      const lines = text.split('\n');
+      let count = 0;
+      lines.forEach(line => {
+        const regex = /(\d{1,2}\/\d{1,2})\s+(\d{1,2}:\d{2})\s+(\d{2,3})\/(\d{2,3})\/(\d{2,3})(?:\s+(\d{2}(?:\.\d+)?))?/;
+        const m = line.match(regex);
+        if (m) {
+          const year = new Date().getFullYear();
+          const [_, datePart, timePart, sys, dia, pulse, temp] = m;
+          const [month, day] = datePart.split('/');
+          const formattedDate = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${timePart}`;
+          vitals.push({
+            id: (Date.now() + Math.random()).toString(),
+            date: formattedDate,
+            sys: Number(sys),
+            dia: Number(dia),
+            pulse: Number(pulse),
+            temp: temp ? Number(temp) : null,
+            user: '批次貼上'
+          });
+          count++;
+        }
+      });
+      syncData('vitals', vitals);
+      renderVitals();
+      renderChart();
+      alert(`成功解析匯入 ${count} 筆紀錄！`);
+      document.getElementById('bulkTextInput').value = '';
+    }
+
+    // I/O 渲染
+    function renderIO() {
+      const tbody = document.getElementById('ioTableBody');
+      tbody.innerHTML = '';
+      let shiftTotals = { '白班': { in: 0, out: 0 }, '小夜': { in: 0, out: 0 }, '大夜': { in: 0, out: 0 } };
+      let grandIn = 0, grandOut = 0;
+
+      ios.slice().reverse().forEach(item => {
+        if (shiftTotals[item.shift]) {
+          if (item.type === 'input') { shiftTotals[item.shift].in += item.amount; grandIn += item.amount; }
+          else { shiftTotals[item.shift].out += item.amount; grandOut += item.amount; }
+        }
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td class="p-2.5 whitespace-nowrap"><span class="font-bold text-slate-700">${item.shift}</span> <span class="text-slate-400 text-[11px]">${item.date.replace('T', ' ')}</span></td>
+          <td class="p-2.5">${item.type === 'input' ? '<span class="text-blue-600 font-semibold"><i class="fa-solid fa-arrow-down"></i> 輸入</span>' : '<span class="text-amber-600 font-semibold"><i class="fa-solid fa-arrow-up"></i> 輸出</span>'}</td>
+          <td class="p-2.5 font-medium">${item.item}</td>
+          <td class="p-2.5 font-bold">${item.amount}</td>
+          <td class="p-2.5 text-slate-500">${item.note || '-'}</td>
+          <td class="p-2.5 text-right"><button onclick="deleteIO('${item.id}')" class="text-slate-400 hover:text-rose-500"><i class="fa-solid fa-trash"></i></button></td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      // 摘要卡片更新
+      document.getElementById('ioSummaryCards').innerHTML = `
+        <div class="bg-blue-50 border border-blue-200 p-2.5 rounded-lg">
+          <div class="text-slate-500 text-[11px]">白班 (入 / 出)</div>
+          <div class="font-bold text-slate-800 text-sm mt-0.5">${shiftTotals['白班'].in} / ${shiftTotals['白班'].out} <span class="text-[10px] font-normal">cc</span></div>
+        </div>
+        <div class="bg-indigo-50 border border-indigo-200 p-2.5 rounded-lg">
+          <div class="text-slate-500 text-[11px]">小夜 (入 / 出)</div>
+          <div class="font-bold text-slate-800 text-sm mt-0.5">${shiftTotals['小夜'].in} / ${shiftTotals['小夜'].out} <span class="text-[10px] font-normal">cc</span></div>
+        </div>
+        <div class="bg-purple-50 border border-purple-200 p-2.5 rounded-lg">
+          <div class="text-slate-500 text-[11px]">大夜 (入 / 出)</div>
+          <div class="font-bold text-slate-800 text-sm mt-0.5">${shiftTotals['大夜'].in} / ${shiftTotals['大夜'].out} <span class="text-[10px] font-normal">cc</span></div>
+        </div>
+        <div class="bg-emerald-50 border border-emerald-200 p-2.5 rounded-lg">
+          <div class="text-slate-500 text-[11px]">總平衡 (輸入 - 輸出)</div>
+          <div class="font-bold ${grandIn - grandOut >= 0 ? 'text-emerald-700' : 'text-rose-700'} text-sm mt-0.5">${grandIn - grandOut > 0 ? '+' : ''}${grandIn - grandOut} <span class="text-[10px] font-normal">cc</span></div>
+        </div>
+      `;
+    }
+
+    function handleIOSubmit(e) {
+      e.preventDefault();
+      const newIO = {
+        id: Date.now().toString(),
+        date: document.getElementById('ioDate').value,
+        shift: document.getElementById('ioShift').value,
+        type: document.getElementById('ioType').value,
+        item: document.getElementById('ioItem').value,
+        amount: Number(document.getElementById('ioAmount').value),
+        note: document.getElementById('ioNote').value
+      };
+      ios.push(newIO);
+      syncData('ios', ios);
+      renderIO();
+      document.getElementById('ioItem').value = '';
+      document.getElementById('ioAmount').value = '';
+      document.getElementById('ioNote').value = '';
+      setNowIO();
+    }
+
+    function deleteIO(id) {
+      if (confirm('確定刪除此筆 I/O 紀錄？')) {
+        ios = ios.filter(i => i.id !== id);
+        syncData('ios', ios);
+        renderIO();
+      }
+    }
+
+    // 症狀交班日誌渲染
+    function renderLogs() {
+      const container = document.getElementById('careLogsTimeline');
+      container.innerHTML = '';
+      logs.forEach(log => {
+        const item = document.createElement('div');
+        item.className = 'border-l-2 border-amber-400 pl-3 py-1 space-y-1 relative';
+        item.innerHTML = `
+          <div class="flex justify-between items-center text-xs">
+            <span class="font-semibold text-slate-800">${log.author}</span>
+            <div class="flex items-center gap-2">
+              <span class="text-slate-400 text-[11px]">${log.date.replace('T', ' ')}</span>
+              <button onclick="deleteLog('${log.id}')" class="text-slate-300 hover:text-rose-500"><i class="fa-solid fa-trash"></i></button>
+            </div>
+          </div>
+          <p class="text-xs text-slate-600 whitespace-pre-wrap">${log.content}</p>
+        `;
+        container.appendChild(item);
+      });
+    }
+
+    function handleLogSubmit(e) {
+      e.preventDefault();
+      const newLog = {
+        id: Date.now().toString(),
+        date: new Date().toISOString().slice(0, 16),
+        author: document.getElementById('logAuthor').value,
+        content: document.getElementById('logContent').value
+      };
+      logs.unshift(newLog);
+      syncData('logs', logs);
+      renderLogs();
+      document.getElementById('logContent').value = '';
+    }
+
+    function deleteLog(id) {
+      if (confirm('確定刪除此交班日誌？')) {
+        logs = logs.filter(l => l.id !== id);
+        syncData('logs', logs);
+        renderLogs();
+      }
+    }
+
+    // 設定彈窗控制
+    function toggleConfigModal() {
+      document.getElementById('configModal').classList.toggle('hidden');
+    }
+    function saveFirebaseConfig() {
+      const val = document.getElementById('firebaseConfigInput').value.trim();
+      try {
+        JSON.parse(val);
+        localStorage.setItem('care_firebase_config', val);
+        location.reload();
+      } catch(e) {
+        alert('格式錯誤，請輸入合法的 JSON 物件格式');
+      }
+    }
+    function clearFirebaseConfig() {
+      localStorage.removeItem('care_firebase_config');
+      location.reload();
+    }
+
+    // 初始化執行
+    setNowVitals();
+    setNowIO();
+    initFirebase();
+    renderVitals();
+    renderChart();
+    renderIO();
+    renderLogs();
+  </script>
+</body>
+</html>
